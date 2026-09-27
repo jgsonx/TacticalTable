@@ -21,11 +21,11 @@
     button { padding: 10px 15px; border: none; border-radius: 5px; background: #007bff; color: white; cursor: pointer; font-weight: bold; }
     button:hover { background: #0056b3; }
     button.recording { background: #dc3545; animation: pulse 1s infinite; }
-    button.analyze { background: #ff9800; color: #000; }
-    button.analyze:hover { background: #e68a00; }
     @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
-    #status { margin-top: 10px; font-size: 0.9em; color: #aaa; text-align: center; }
-    .audio-alert { color: #ffeb3b; font-size: 0.8em; margin-top: 5px; text-align: center; }
+    #legend { margin-top: 15px; font-size: 0.9em; color: #ddd; display: flex; gap: 15px; }
+    .legend-item { display: flex; align-items: center; gap: 5px; }
+    .dash-yellow { width: 20px; height: 3px; background: repeating-linear-gradient(90deg, #ffeb3b, #ffeb3b 6px, transparent 6px, transparent 10px); }
+    .dash-cyan { width: 20px; height: 3px; background: repeating-linear-gradient(90deg, #00e5ff, #00e5ff 3px, transparent 3px, transparent 6px); }
   </style>
 </head>
 <body>
@@ -56,11 +56,13 @@
   
   <div class="controls">
     <label class="toggle-label" style="background: #333; padding: 8px 12px; border-radius: 5px;">
-      <input type="checkbox" id="recordAudio" checked> 🎙️ Include Mic Audio
+      <input type="checkbox" id="recordAudio" checked> 🎙️ Mic
+    </label>
+    <label class="toggle-label" style="background: #ff9800; color: #000; font-weight: bold; padding: 8px 12px; border-radius: 5px;">
+      <input type="checkbox" id="toggleOptimalPlay"> 🔍 Visa Bästa Uppspel
     </label>
     <button id="recordBtn">Start Recording</button>
-    <button id="calcBtn" class="analyze">🔍 Hitta Bästa Uppspel</button>
-    <button id="resetBtn" style="background: #555;">Reset</button>
+    <button id="resetBtn" style="background: #555;">Reset Positions</button>
   </div>
   
   <div class="toggles">
@@ -68,7 +70,10 @@
     <label class="toggle-label"><input type="checkbox" id="toggleThirds"> Show Thirds</label>
   </div>
 
-  <div id="status">Ready... Move players around!</div>
+  <div id="legend">
+    <div class="legend-item"><div class="dash-yellow"></div> = Passning</div>
+    <div class="legend-item"><div class="dash-cyan"></div> = Driva boll</div>
+  </div>
 
   <script>
     const canvas = document.getElementById('pitch');
@@ -77,7 +82,6 @@
     const blueRot = Math.PI / 2;
     const redRot = -Math.PI / 2;
     
-    // Condensed formations for brevity (add your full lists back here)
     const blueFormations = {
       "9v9_3_4_1": [ { x: 250, y: 40, color: 'blue', color2: 'yellow', type: 'GK', rotation: blueRot }, { x: 125, y: 130, color: 'blue', type: 'LCB', rotation: blueRot }, { x: 250, y: 110, color: 'blue', type: 'CB', rotation: blueRot }, { x: 375, y: 130, color: 'blue', type: 'RCB', rotation: blueRot }, { x: 50, y: 230, color: 'blue', type: 'LM', rotation: blueRot }, { x: 200, y: 210, color: 'blue', type: 'CM', rotation: blueRot }, { x: 300, y: 210, color: 'blue', type: 'CM', rotation: blueRot }, { x: 450, y: 230, color: 'blue', type: 'RM', rotation: blueRot }, { x: 250, y: 310, color: 'blue', type: 'ST', rotation: blueRot } ],
       "7v7_2_3_1": [ { x: 250, y: 40, color: 'blue', color2: 'yellow', type: 'GK', rotation: blueRot }, { x: 175, y: 120, color: 'blue', type: 'LCB', rotation: blueRot }, { x: 325, y: 120, color: 'blue', type: 'RCB', rotation: blueRot }, { x: 125, y: 210, color: 'blue', type: 'LM', rotation: blueRot }, { x: 250, y: 190, color: 'blue', type: 'CM', rotation: blueRot }, { x: 375, y: 210, color: 'blue', type: 'RM', rotation: blueRot }, { x: 250, y: 290, color: 'blue', type: 'ST', rotation: blueRot } ]
@@ -90,98 +94,144 @@
 
     let players = [];
     let draggingPlayer = null;
-    let bestPath = null; // Stores the calculated nodes for rendering
+    let bestPath = [];
+    let maxEV = 0;
 
     function buildPlayersArray() {
       const blueKey = document.getElementById('blueSelect').value;
       const redKey = document.getElementById('redSelect').value;
       players = [...JSON.parse(JSON.stringify(blueFormations[blueKey])), ...JSON.parse(JSON.stringify(redFormations[redKey])), JSON.parse(JSON.stringify(defaultBall))];
-      bestPath = null;
+      updateOptimalPlay();
+      drawPitch();
     }
 
-    buildPlayersArray();
-    document.getElementById('blueSelect').addEventListener('change', () => { buildPlayersArray(); drawPitch(); });
-    document.getElementById('redSelect').addEventListener('change', () => { buildPlayersArray(); drawPitch(); });
+    function updateOptimalPlay() {
+      if (document.getElementById('toggleOptimalPlay').checked) {
+        calculateOptimalPlay();
+      } else {
+        bestPath = [];
+      }
+    }
+
+    document.getElementById('blueSelect').addEventListener('change', () => { buildPlayersArray(); });
+    document.getElementById('redSelect').addEventListener('change', () => { buildPlayersArray(); });
     document.getElementById('toggleCorridors').addEventListener('change', drawPitch);
     document.getElementById('toggleThirds').addEventListener('change', drawPitch);
-    document.getElementById('resetBtn').addEventListener('click', () => { buildPlayersArray(); drawPitch(); });
+    document.getElementById('resetBtn').addEventListener('click', () => { buildPlayersArray(); });
+    
+    document.getElementById('toggleOptimalPlay').addEventListener('change', () => {
+      updateOptimalPlay();
+      drawPitch();
+    });
 
-    // --- ALGORITHM FOR BEST PLAY ---
-    document.getElementById('calcBtn').addEventListener('click', () => {
+    // --- ALGORITMEN ---
+    function calculateOptimalPlay() {
+      bestPath = [];
+      maxEV = -1;
+      
       const ball = players.find(p => p.type === 'ball');
       const outfielders = players.filter(p => p.type !== 'ball');
       
-      // 1. Find who has the ball
       let carrier = null, minDist = Infinity;
       outfielders.forEach(p => {
         let d = Math.hypot(p.x - ball.x, p.y - ball.y);
         if(d < minDist) { minDist = d; carrier = p; }
       });
       
-      if(minDist > 30) {
-        document.getElementById('status').textContent = 'Placera bollen exakt på spelaren som ska starta uppspelet!';
-        return;
-      }
+      if(!carrier || minDist > 40) return;
       
       const attTeam = carrier.color;
       const attackers = outfielders.filter(p => p.color === attTeam);
       const defenders = outfielders.filter(p => p.color !== attTeam);
+      const attackDir = (attTeam === 'blue') ? 1 : -1; 
       
-      // 2. Expected Threat (xT) model based on Y-coordinate progression
       const getXT = (p) => {
-        if(attTeam === 'blue') return Math.pow(p.y / 650, 2) * 0.3; 
-        return Math.pow((650 - p.y) / 650, 2) * 0.3; 
+        let val = (attTeam === 'blue') ? (p.y / 650) : ((650 - p.y) / 650);
+        return Math.pow(val, 2) * 0.3; 
       };
       
-      // 3. Pass completion probability model
-      const getPassProb = (from, to) => {
-        let prob = 0.90;
+      const getActionProb = (from, to, type) => {
+        let prob = (type === 'pass') ? 0.90 : 0.85;
         let dist = Math.hypot(to.x - from.x, to.y - from.y);
-        prob -= (dist / 1000); // Small penalty for long distance passes
         
+        if (type === 'pass') prob -= (dist / 1000); 
+        
+        let blocked = false;
         defenders.forEach(d => {
           const l2 = dist * dist;
           if (l2 === 0) return;
-          // Calculate closest point on pass line to the defender
           const t = Math.max(0, Math.min(1, ((d.x - from.x) * (to.x - from.x) + (d.y - from.y) * (to.y - from.y)) / l2));
           const projX = from.x + t * (to.x - from.x);
           const projY = from.y + t * (to.y - from.y);
           const distToLine = Math.hypot(d.x - projX, d.y - projY);
           
-          if(distToLine < 35) prob *= 0.2; // Pass shadow blocked
-          else if(distToLine < 70) prob *= 0.7; // Pressured pass
+          if(distToLine < 20) {
+            blocked = true; 
+          } else if(distToLine < 40) {
+            prob *= (type === 'pass') ? 0.4 : 0.2; 
+          } else if(distToLine < 70) {
+            prob *= 0.8;
+          }
         });
-        return Math.max(0.01, prob);
+        
+        if (blocked) return 0.0;
+        return Math.max(0, prob);
       };
 
-      // 4. Graph Search (Max 3 passes / 4 nodes)
-      let maxEV = -1;
-      bestPath = [];
-      
-      attackers.forEach(p1 => {
-        if(p1 === carrier) return;
-        let prob1 = getPassProb(carrier, p1);
-        let ev1 = prob1 * getXT(p1);
-        if(ev1 > maxEV) { maxEV = ev1; bestPath = [carrier, p1]; }
+      // --- DFS SÖKTRÄD ---
+      function searchTree(node, currentProb, path, depth, currentPlayer) {
+        let ev = currentProb * getXT(node);
+        if (ev > maxEV && path.length > 1) {
+            maxEV = ev;
+            bestPath = [...path];
+        }
         
-        attackers.forEach(p2 => {
-          if(p2 === p1 || p2 === carrier) return;
-          let prob2 = getPassProb(p1, p2);
-          let ev2 = prob1 * prob2 * getXT(p2);
-          if(ev2 > maxEV) { maxEV = ev2; bestPath = [carrier, p1, p2]; }
+        // Ökat till 4 aktioner
+        if (depth >= 4) return; 
+
+        // 1. Passningsalternativ
+        attackers.forEach(mate => {
+          if (mate === currentPlayer) return; 
           
-          attackers.forEach(p3 => {
-             if(p3 === p2 || p3 === p1 || p3 === carrier) return;
-             let prob3 = getPassProb(p2, p3);
-             let ev3 = prob1 * prob2 * prob3 * getXT(p3);
-             if(ev3 > maxEV) { maxEV = ev3; bestPath = [carrier, p1, p2, p3]; }
+          // Förhindra att man passar till någon som redan haft bollen i kedjan
+          let alreadyHadBall = path.some(n => (n.player || n) === mate);
+          if (alreadyHadBall) return;
+
+          let pProb = getActionProb(node, mate, 'pass');
+          if (pProb > 0.05) { 
+            searchTree(mate, currentProb * pProb, [...path, mate], depth + 1, mate);
+          }
+        });
+
+        // 2. Alternativ för att driva bollen (Finmaskigt nät)
+        let driveDistances = [45, 90]; // Kort eller lång drivning
+        let driveAngles = [-0.5, 0, 0.5]; // Snett vänster, rakt fram, snett höger (radianer)
+        
+        let baseAngle = (attackDir === 1) ? Math.PI/2 : -Math.PI/2;
+
+        driveDistances.forEach(dist => {
+          driveAngles.forEach(angle => {
+            let moveAngle = baseAngle + angle;
+            let newX = node.x + Math.cos(moveAngle) * dist;
+            let newY = node.y + Math.sin(moveAngle) * dist;
+            
+            // Håll drivningen innanför linjerna
+            if (newY > 15 && newY < 635 && newX > 15 && newX < 485) {
+              // Spara currentPlayer i den nya noden så vi vet vem som har bollen efter drivningen
+              let drivaNode = { x: newX, y: newY, isDriva: true, player: currentPlayer };
+              let dProb = getActionProb(node, drivaNode, 'driva');
+              
+              if (dProb > 0.2) {
+                searchTree(drivaNode, currentProb * dProb, [...path, drivaNode], depth + 1, currentPlayer);
+              }
+            }
           });
         });
-      });
+      }
       
-      document.getElementById('status').textContent = `Optimal rutt hittad! Estimerad xT-värde: ${(maxEV * 100).toFixed(2)}`;
-      drawPitch();
-    });
+      // Starta sökningen: (Nuvarande nod, sannolikhet, sökväg, djup, nuvarande spelare)
+      searchTree(carrier, 1.0, [carrier], 0, carrier);
+    }
 
     function drawPitch() {
       ctx.fillStyle = '#2E8B57'; ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -202,29 +252,41 @@
       ctx.strokeRect(100, canvas.height - 110, 300, 110); ctx.strokeRect(175, canvas.height - 40, 150, 40);
       ctx.beginPath(); ctx.arc(250, canvas.height - 110, 40, Math.PI, 0); ctx.stroke();
 
-      // --- NEW: Draw the optimal pass path ---
+      // RITA UPP DEN OPTIMALA RUTTEN
       if(bestPath && bestPath.length > 1) {
-        ctx.beginPath();
-        ctx.strokeStyle = '#ffeb3b';
-        ctx.lineWidth = 3;
-        ctx.setLineDash([8, 6]);
-        ctx.moveTo(bestPath[0].x, bestPath[0].y);
         for(let i = 1; i < bestPath.length; i++) {
+          ctx.beginPath();
+          ctx.lineWidth = 3;
+          if (bestPath[i].isDriva) {
+            ctx.strokeStyle = '#00e5ff'; 
+            ctx.setLineDash([3, 4]);
+          } else {
+            ctx.strokeStyle = '#ffeb3b'; 
+            ctx.setLineDash([10, 6]);
+          }
+          ctx.moveTo(bestPath[i-1].x, bestPath[i-1].y);
           ctx.lineTo(bestPath[i].x, bestPath[i].y);
+          ctx.stroke();
         }
-        ctx.stroke();
         ctx.setLineDash([]);
         
-        for(let i = 1; i < bestPath.length; i++) {
-           ctx.beginPath();
-           ctx.arc(bestPath[i].x, bestPath[i].y, 16, 0, Math.PI*2);
-           ctx.fillStyle = 'rgba(255, 235, 59, 0.4)';
-           ctx.fill();
-           ctx.stroke();
-        }
+        let lastNode = bestPath[bestPath.length - 1];
+        let evText = "xT: " + (maxEV * 100).toFixed(1) + "%";
+        
+        ctx.font = 'bold 16px system-ui';
+        let textWidth = ctx.measureText(evText).width;
+        
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+        ctx.fillRect(lastNode.x - (textWidth/2) - 8, lastNode.y - 35, textWidth + 16, 26);
+        
+        ctx.fillStyle = '#4caf50'; 
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(evText, lastNode.x, lastNode.y - 22);
       }
 
       players.forEach(p => {
+        if(p.isDriva) return; 
         let r = p.radius || 12;
         ctx.save(); ctx.translate(p.x, p.y);
         if (p.type !== 'ball' && p.rotation !== undefined) ctx.rotate(p.rotation);
@@ -252,10 +314,8 @@
 
     function handleStart(e) {
       e.preventDefault();
-      bestPath = null; // Clear path when moving players
       const pos = getPointerPos(e);
       draggingPlayer = players.find(p => Math.hypot(pos.x - p.x, pos.y - p.y) < (p.radius || 15) + 10);
-      drawPitch();
     }
 
     function handleMove(e) {
@@ -267,6 +327,8 @@
       if (draggingPlayer.type !== 'ball' && Math.hypot(pos.x - draggingPlayer.x, pos.y - draggingPlayer.y) > 1.5) {
         draggingPlayer.rotation = Math.atan2(pos.y - draggingPlayer.y, pos.x - draggingPlayer.x);
       }
+      
+      updateOptimalPlay();
       drawPitch();
     }
 
@@ -274,6 +336,8 @@
     canvas.addEventListener('mouseup', () => draggingPlayer = null); canvas.addEventListener('mouseleave', () => draggingPlayer = null);
     canvas.addEventListener('touchstart', handleStart, { passive: false }); canvas.addEventListener('touchmove', handleMove, { passive: false });
     canvas.addEventListener('touchend', () => draggingPlayer = null);
+
+    buildPlayersArray();
   </script>
 </body>
 </html>
