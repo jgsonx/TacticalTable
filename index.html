@@ -18,13 +18,14 @@
     .controls { margin-top: 15px; display: flex; gap: 15px; flex-wrap: wrap; justify-content: center; align-items: center; }
     .toggles { margin-top: 10px; display: flex; gap: 20px; font-size: 0.95em; color: #ddd; flex-wrap: wrap; justify-content: center; }
     label.toggle-label { display: flex; align-items: center; gap: 5px; cursor: pointer; color: white; font-weight: normal; }
-    button { padding: 10px 15px; border: none; border-radius: 5px; background: #007bff; color: white; cursor: pointer; font-weight: bold; }
+    button { padding: 10px 15px; border: none; border-radius: 5px; background: #007bff; color: white; cursor: pointer; font-weight: bold; transition: background 0.2s; }
     button:hover { background: #0056b3; }
     button.recording { background: #dc3545; animation: pulse 1s infinite; }
     @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
     #legend { margin-top: 15px; font-size: 0.9em; color: #ddd; display: flex; gap: 15px; flex-wrap: wrap; justify-content: center; }
     .legend-item { display: flex; align-items: center; gap: 5px; }
     .dash-yellow { width: 20px; height: 3px; background: repeating-linear-gradient(90deg, #ffeb3b, #ffeb3b 6px, transparent 6px, transparent 10px); }
+    .dash-green { width: 20px; height: 3px; background: repeating-linear-gradient(90deg, #4caf50, #4caf50 6px, transparent 6px, transparent 10px); }
     .dash-cyan { width: 20px; height: 3px; background: repeating-linear-gradient(90deg, #00e5ff, #00e5ff 3px, transparent 3px, transparent 6px); }
     .dash-purple { width: 20px; height: 3px; background: repeating-linear-gradient(90deg, #e040fb, #e040fb 4px, transparent 4px, transparent 8px); }
     .dash-red { width: 20px; height: 3px; background: repeating-linear-gradient(90deg, #ff1744, #ff1744 4px, transparent 4px, transparent 8px); }
@@ -75,7 +76,8 @@
   </div>
 
   <div id="legend">
-    <div class="legend-item"><div class="dash-yellow"></div> = Passning</div>
+    <div class="legend-item"><div class="dash-yellow"></div> = På fot</div>
+    <div class="legend-item"><div class="dash-green"></div> = På yta (Djupled)</div>
     <div class="legend-item"><div class="dash-cyan"></div> = Driva</div>
     <div class="legend-item"><div class="dash-purple"></div> = 1v1 (50%)</div>
     <div class="legend-item"><div class="dash-red"></div> = Skott (xG)</div>
@@ -102,6 +104,11 @@
     let draggingPlayer = null;
     let bestPath = [];
     let maxEV = 0;
+    
+    // Media Recording Variables
+    let mediaRecorder;
+    let recordedChunks = [];
+    let audioStream = null;
 
     const GRID_COLS = 11;
     const GRID_ROWS = 13;
@@ -121,6 +128,63 @@
         bestPath = [];
       }
     }
+
+    // --- RECORDING LOGIC ---
+    const recordBtn = document.getElementById('recordBtn');
+    const recordAudioCheckbox = document.getElementById('recordAudio');
+
+    recordBtn.addEventListener('click', async () => {
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        mediaRecorder.stop();
+        if (audioStream) {
+          audioStream.getTracks().forEach(track => track.stop());
+        }
+        recordBtn.textContent = 'Start Recording';
+        recordBtn.classList.remove('recording');
+        return;
+      }
+
+      recordedChunks = [];
+      // Capture canvas stream at 30 FPS
+      const canvasStream = canvas.captureStream(100);
+      let combinedStream = canvasStream;
+
+      if (recordAudioCheckbox.checked) {
+        try {
+          audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const tracks = [...canvasStream.getTracks(), ...audioStream.getTracks()];
+          combinedStream = new MediaStream(tracks);
+        } catch (err) {
+          console.error("Microphone access denied or unavailable: ", err);
+          alert("Microphone access denied. Proceeding with video only.");
+        }
+      }
+
+      mediaRecorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm' });
+      
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) recordedChunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(recordedChunks, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = 'tactics_recording.webm';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }, 100);
+      };
+
+      mediaRecorder.start();
+      recordBtn.textContent = 'Stop Recording';
+      recordBtn.classList.add('recording');
+    });
 
     document.getElementById('blueSelect').addEventListener('change', () => { buildPlayersArray(); });
     document.getElementById('redSelect').addEventListener('change', () => { buildPlayersArray(); });
@@ -191,23 +255,16 @@
         else if (type === 'driva') prob = 0.95;
         else if (type === '1v1') prob = 0.50;
         else if (type === 'shot') {
-          // Realistisk skottmodell (xG-baserad)
-          // Målets mittpunkt beroende på anfallsriktning
           let goalX = 250;
           let goalY = (attTeam === 'blue') ? 650 : 0;
           let distToGoal = Math.hypot(goalX - from.x, goalY - from.y);
           
-          // Om skottet tas för långt borta blir sannolikheten 0
           if (distToGoal > 300) return 0.0;
 
-          // Grund-xG baserat på avstånd och vinkel mot mål
           let baseXG = Math.max(0.05, 0.65 - (distToGoal / 400));
-          
-          // Justera för centralitet (skott från kanten är svårare)
           let angleFactor = 1 - (Math.abs(from.x - 250) / 250) * 0.4;
           prob = baseXG * angleFactor;
 
-          // Kontrollera om någon försvarare blockerar skottlinjen mellan spelare och mål
           defenders.forEach(d => {
             const l2 = distToGoal * distToGoal;
             if (l2 === 0) return;
@@ -217,7 +274,7 @@
             const distToLine = Math.hypot(d.x - projX, d.y - projY);
             
             if (distToLine < 30) {
-              prob *= 0.15; // Stor risk för täckt/blockerat skott
+              prob *= 0.15; 
             }
           });
 
@@ -229,7 +286,7 @@
         if (type === 'pass') {
           prob -= (dist / 1000); 
         } else if (type === 'driva') {
-          prob -= (dist / 600); 
+          prob -= (dist / 400); 
           
           let closestPlayer = null;
           let minD = Infinity;
@@ -253,10 +310,10 @@
             const projY = from.y + t * (to.y - from.y);
             const distToLine = Math.hypot(d.x - projX, d.y - projY);
             
-            if(distToLine < 20) {
+            if(distToLine < 10) {
               blocked = true; 
-            } else if(distToLine < 40) {
-              prob *= (type === 'pass') ? 0.4 : 0.2; 
+            } else if(distToLine < 25) {
+              prob *= (type === 'pass') ? 0.6 : 0.2; 
             } else if(distToLine < 70) {
               prob *= 0.8;
             }
@@ -277,13 +334,13 @@
         
         if (depth >= 4) return; 
 
-        // 0. Skottmöjlighet (om vi är i offensiv planhalva)
+        // 0. Skottmöjlighet
         let inAttackingHalf = (attTeam === 'blue' && node.y > 250) || (attTeam === 'red' && node.y < 400);
         if (inAttackingHalf) {
           let goalNode = { x: 250, y: (attTeam === 'blue' ? 650 : 0), isShot: true, player: currentPlayer };
           let shotProb = getActionProb(node, goalNode, 'shot');
           if (shotProb > 0.03) {
-            let shotEV = currentProb * shotProb * 0.9; // Extra viktning för målpremie
+            let shotEV = currentProb * shotProb * 0.9; 
             if (shotEV > maxEV) {
               maxEV = shotEV;
               bestPath = [...path, goalNode];
@@ -291,15 +348,34 @@
           }
         }
 
-        // 1. Passningsalternativ
+        // 1. Passningsalternativ (Fot och Yta)
         attackers.forEach(mate => {
           if (mate === currentPlayer) return; 
           let alreadyHadBall = path.some(n => (n.player || n) === mate);
           if (alreadyHadBall) return;
 
+          // A) Vanlig passning på foten
           let pProb = getActionProb(node, mate, 'pass');
           if (pProb > 0.05) { 
             searchTree(mate, currentProb * pProb, [...path, mate], depth + 1, mate);
+          }
+
+          // B) Passning på yta (Djupledspassning)
+          let spaceX = mate.x;
+          let spaceY = mate.y + (75 * attackDir); 
+
+          if (spaceX >= 10 && spaceX <= canvas.width - 10 && spaceY >= 10 && spaceY <= canvas.height - 10) {
+            let spaceNode = { x: spaceX, y: spaceY, isThroughBall: true, player: mate };
+            
+            let mateDist = Math.hypot(spaceX - mate.x, spaceY - mate.y);
+            let defWins = defenders.some(d => Math.hypot(spaceX - d.x, spaceY - d.y) < mateDist);
+
+            if (!defWins) {
+              let spaceProb = getActionProb(node, spaceNode, 'pass');
+              if (spaceProb > 0.05) {
+                searchTree(spaceNode, currentProb * spaceProb, [...path, spaceNode], depth + 1, mate);
+              }
+            }
           }
         });
 
@@ -336,7 +412,7 @@
           let distToDef = Math.hypot(def.x - node.x, def.y - node.y);
           if (distToDef < 70) {
             let passX = def.x;
-            let passY = def.y + (rowH * 1.5) * rowDir;
+            let passY = def.y + (rowH * 1.0) * rowDir;
             
             if (passX >= 10 && passX <= canvas.width - 10 && passY >= 10 && passY <= canvas.height - 10) {
               let duelNode = { x: passX, y: passY, is1v1: true, player: currentPlayer };
@@ -432,16 +508,19 @@
           ctx.beginPath();
           ctx.lineWidth = 3;
           if (bestPath[i].isShot) {
-            ctx.strokeStyle = '#ff1744'; // Rött för Skott
+            ctx.strokeStyle = '#ff1744'; 
             ctx.setLineDash([4, 3]);
           } else if (bestPath[i].is1v1) {
-            ctx.strokeStyle = '#e040fb'; // Lila för 1v1
+            ctx.strokeStyle = '#e040fb'; 
             ctx.setLineDash([4, 4]);
           } else if (bestPath[i].isDriva) {
-            ctx.strokeStyle = '#00e5ff'; // Cyan för Driva
+            ctx.strokeStyle = '#00e5ff'; 
             ctx.setLineDash([3, 4]);
+          } else if (bestPath[i].isThroughBall) {
+            ctx.strokeStyle = '#4caf50'; 
+            ctx.setLineDash([8, 6]);
           } else {
-            ctx.strokeStyle = '#ffeb3b'; // Gul för Passning
+            ctx.strokeStyle = '#ffeb3b'; 
             ctx.setLineDash([10, 6]);
           }
           ctx.moveTo(bestPath[i-1].x, bestPath[i-1].y);
@@ -466,7 +545,9 @@
 
         ctx.beginPath();
         ctx.arc(finalX, finalY, 5, 0, Math.PI * 2);
-        ctx.fillStyle = lastNode.isShot ? '#ff1744' : '#ffeb3b';
+        if (lastNode.isShot) ctx.fillStyle = '#ff1744';
+        else if (lastNode.isThroughBall) ctx.fillStyle = '#4caf50';
+        else ctx.fillStyle = '#ffeb3b';
         ctx.fill();
 
         let evText = (lastNode.isShot ? "Skott xG: " : "xT: ") + (maxEV * 100).toFixed(1) + "%";
@@ -494,7 +575,8 @@
       }
 
       players.forEach(p => {
-        if(p.isDriva || p.is1v1 || p.isShot) return; 
+        if(p.isDriva || p.is1v1 || p.isShot || p.isThroughBall) return; 
+        
         let r = p.radius || 12;
         ctx.save(); ctx.translate(p.x, p.y);
         if (p.type !== 'ball' && p.rotation !== undefined) ctx.rotate(p.rotation);
